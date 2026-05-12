@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StemScope</title>
+<link rel="icon" href="./favicon.ico" sizes="256x256">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: #05050a;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* CRT scanlines */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0, transparent 3px,
+    rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px
+  );
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* ── WAVEFORM ── */
+#waveform-wrap {
+  height: 28vh;
+  flex-shrink: 0;
+  position: relative;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#wvcv { display: block; width: 100%; height: 100%; }
+
+/* ── SPECTRUM + PIANO ── */
+#spectrum-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#cv { display: block; width: 100%; height: 100%; }
+
+/* ── DROP OVERLAY (idle) ── */
+#drop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(5,5,10,0.88);
+  cursor: pointer;
+  z-index: 10;
+  transition: background 0.2s;
+}
+#drop.drag-over { background: rgba(200,216,240,0.06); }
+#drop.hide { display: none; }
+#drop .icon {
+  width: 56px; height: 56px;
+  border: 1px solid #1a1a28;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; color: #1e1e2e;
+}
+#drop .t1 {
+  font-family: 'Courier New', monospace;
+  font-size: 10px; letter-spacing: 5px;
+  color: #1a1a28; text-transform: uppercase;
+}
+#drop .t2 {
+  font-family: 'Courier New', monospace;
+  font-size: 9px; color: #111; letter-spacing: 2px;
+}
+
+/* ── PAUSED OVERLAY ── */
+#pause-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  z-index: 10;
+  pointer-events: none; /* 子要素だけ反応させる */
+}
+#pause-overlay.show { display: block; }
+
+/* ポーズアイコン（中央寄り） */
+#btn-pause-icon {
+  position: absolute;
+  top: 50%;
+  left: 38%;
+  transform: translate(-50%, -50%);
+  width: 72px; height: 72px;
+  border: 2px solid rgba(200,216,240,0.35);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#btn-pause-icon svg {
+  width: 26px; height: 26px;
+  fill: rgba(200,216,240,0.45);
+}
+
+/* ファイルオープンボタン（右上寄り） */
+#btn-open {
+  position: absolute;
+  top: 50%;
+  right: 8%;
+  transform: translateY(-50%);
+  width: 64px; height: 64px;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#btn-open svg {
+  width: 42px; height: 42px;
+  fill: rgba(200,216,240,0.38);
+}
+
+/* 時刻表示（右下） */
+#tdisp {
+  position: fixed;
+  bottom: 6px; right: 12px;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: rgba(200,216,240,0.18);
+  letter-spacing: 2px;
+  font-variant-numeric: tabular-nums;
+  z-index: 50;
+  pointer-events: none;
+  transition: color 0.3s;
+}
+#tdisp.frozen { color: rgba(200,216,240,0.45); }
+
+input[type=file] { display:none; }
+</style>
+</head>
+<body>
+
+<!-- 波形エリア -->
+<div id="waveform-wrap">
+  <canvas id="wvcv"></canvas>
+</div>
+
+<!-- スペクトラム＋ピアノ -->
+<div id="spectrum-wrap">
+  <canvas id="cv"></canvas>
+
+  <!-- ファイルドロップ (idle時) -->
+  <div id="drop">
+    <div class="icon">↓</div>
+    <div class="t1">Drop audio file here</div>
+    <div class="t2">wav · aiff · mp3 · m4a · ogg · flac</div>
+  </div>
+
+  <!-- ポーズ中オーバーレイ -->
+  <div id="pause-overlay">
+    <!-- ⏸ ボタン -->
+    <div id="btn-pause-icon">
+      <svg viewBox="0 0 24 24"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>
+    </div>
+    <!-- 📂 ボタン -->
+    <div id="btn-open">
+      <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+    </div>
+  </div>
+</div>
+
+<div id="tdisp">00:00.000</div>
+<input type="file" id="finput" accept="audio/*,.mp3,.wav,.wave,.aif,.aiff,.m4a,.aac,.ogg,.flac,.mp4,.caf">
+
+<script>
+'use strict';
+
+// ── CONFIG ───────────────────────────────────────────────────────
+const FFT_SIZE   = 16384;
+const MIDI_MIN   = 36;   // C2
+const MIDI_MAX   = 96;   // C7 → 61鍵
+const DB_MIN     = -90;
+const DB_MAX     = -5;
+const PIANO_FRAC = 0.20;
+const BAR_SCALE  = 7.0;
+
+const COL = [200, 216, 240];
+const rgb  = `rgb(${COL.join(',')})`;
+const rgba = a => `rgba(${COL.join(',')},${a})`;
+
+// ── STATE ────────────────────────────────────────────────────────
+// 'idle' | 'playing' | 'paused'
+let playState = 'idle';
+let actx, analyser, source, audioBuf;
+let startTime = 0, pauseOff = 0;
+let frozen = false, frozenData = null, lastFrame = null;
+let layout = null, rafId = null, wvPeaks = null;
+
+// ── AUDIO ────────────────────────────────────────────────────────
+function initCtx() {
+  if (actx) return;
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = actx.createAnalyser();
+  analyser.fftSize = FFT_SIZE;
+  analyser.smoothingTimeConstant = 0.55;
+  analyser.minDecibels = DB_MIN;
+  analyser.maxDecibels = DB_MAX;
+  analyser.connect(actx.destination);
+}
+
+async function loadFile(file) {
+  initCtx();
+  hardStop();
+  playState = 'idle'; pauseOff = 0;
+  frozen = false; frozenData = null; lastFrame = null;
+  audioBuf = null; wvPeaks = null;
+
+  const ab = await file.arrayBuffer();
+  await actx.resume();
+  audioBuf = await actx.decodeAudioData(ab);
+
+  $('drop').classList.add('hide');
+  buildWaveform();
+  // ロード後すぐ先頭から再生
+  doPlay(0);
+}
+
+function hardStop() {
+  if (source) {
+    try { source.stop(); source.disconnect(); } catch(e) {}
+    source = null;
+  }
+}
+
+function doPlay(off) {
+  if (!audioBuf) return;
+  hardStop();
+  source = actx.createBufferSource();
+  source.buffer = audioBuf;
+  source.connect(analyser);
+  const safeOff = Math.max(0, Math.min(off, audioBuf.duration - 0.01));
+  source.start(0, safeOff);
+  startTime = actx.currentTime - safeOff;
+  playState = 'playing';
+  frozen = false; frozenData = null;
+  source.onended = () => {
+    if (playState === 'playing') { playState = 'idle'; pauseOff = 0; syncUI(); }
+  };
+  syncUI();
+}
+
+function doPause() {
+  if (actx && source) pauseOff = Math.max(0, actx.currentTime - startTime);
+  hardStop();
+  // スペクトラムスナップショット
+  if (analyser) {
+    const snap = new Float32Array(analyser.frequencyBinCount);
+    analyser.getFloatFrequencyData(snap);
+    if (snap.some(v => v > -140)) lastFrame = snap;
+  }
+  frozenData = lastFrame;
+  frozen = true;
+  playState = 'paused';
+  syncUI();
+}
+
+function doResume() {
+  frozen = false; frozenData = null;
+  doPlay(pauseOff);
+}
+
+function curTime() {
+  if (!actx) return 0;
+  return playState === 'playing'
+    ? Math.max(0, actx.currentTime - startTime)
+    : pauseOff;
+}
+
+function syncUI() {
+  const po = $('pause-overlay');
+  po.classList.toggle('show', playState === 'paused');
+
+  const td = $('tdisp');
+  td.classList.toggle('frozen', playState === 'paused');
+}
+
+// ── WAVEFORM ─────────────────────────────────────────────────────
+const wvcv  = $('wvcv');
+const wvctx = wvcv.getContext('2d');
+
+function buildWaveform() {
+  if (!audioBuf) { drawWaveform(); return; }
+  const W = wvcv.offsetWidth || 800;
+  const ch = audioBuf.getChannelData(0);
+  const step = Math.max(1, Math.floor(ch.length / W));
+  wvPeaks = new Float32Array(W);
+  for (let i = 0; i < W; i++) {
+    let mx = 0;
+    const base = i * step;
+    for (let j = 0; j < step && base + j < ch.length; j++) {
+      const v = Math.abs(ch[base + j]);
+      if (v > mx) mx = v;
+    }
+    wvPeaks[i] = mx;
+  }
+}
+
+function drawWaveform() {
+  const W = wvcv.width, H = wvcv.height;
+  if (!W || !H) return;
+  wvctx.fillStyle = '#05050a';
+  wvctx.fillRect(0, 0, W, H);
+  if (!wvPeaks) return;
+
+  const mid = H * 0.5;
+  const prog = audioBuf ? Math.min(1, curTime() / audioBuf.duration) : 0;
+  const px   = Math.round(prog * W);
+
+  for (let x = 0; x < W; x++) {
+    const amp   = wvPeaks[x] * mid * 0.90;
+    const alpha = x < px ? 0.80 : 0.15;
+    wvctx.fillStyle = rgba(alpha);
+    wvctx.fillRect(x, mid - amp, 1, amp * 2 || 1);
+  }
+
+  // プレイヘッド
+  wvctx.fillStyle = 'rgba(255,255,255,0.55)';
+  wvctx.fillRect(px, 0, 1, H);
+}
+
+// ── PIANO LAYOUT ─────────────────────────────────────────────────
+function isBlack(m) { return [1,3,6,8,10].includes(m % 12); }
+function midiHz(m)  { return 440 * Math.pow(2, (m - 69) / 12); }
+
+function buildLayout(W) {
+  const whites = [];
+  for (let m = MIDI_MIN; m <= MIDI_MAX; m++) if (!isBlack(m)) whites.push(m);
+  const wW = W / whites.length;
+  const bW = wW * 0.58;
+  const map = {};
+  whites.forEach((m, i) => { map[m] = { x: i * wW, w: wW }; });
+  for (let m = MIDI_MIN; m <= MIDI_MAX; m++) {
+    if (!isBlack(m)) continue;
+    const lw = map[m - 1];
+    if (lw) map[m] = { x: lw.x + wW - bW * 0.5, w: bW, black: true };
+  }
+  return { map, wW, whites };
+}
+
+// ── FFT → MIDI ───────────────────────────────────────────────────
+function fftForMidi(midi, data) {
+  const sr   = actx.sampleRate;
+  const f    = midiHz(midi);
+  const half = Math.pow(2, 1/24);
+  const bHz  = sr / FFT_SIZE;
+  const lo   = Math.max(0, Math.floor(f / half / bHz));
+  const hi   = Math.min(data.length - 1, Math.ceil(f * half / bHz));
+  let mx = -Infinity;
+  for (let b = lo; b <= hi; b++) if (data[b] > mx) mx = data[b];
+  const lin = Math.max(0, Math.min(1, (mx - DB_MIN) / (DB_MAX - DB_MIN)));
+  return Math.pow(lin, 5.5);
+}
+
+// ── RENDER ───────────────────────────────────────────────────────
+const cv   = $('cv');
+const ctx2 = cv.getContext('2d');
+
+function resize() {
+  cv.width    = cv.offsetWidth;
+  cv.height   = cv.offsetHeight;
+  wvcv.width  = wvcv.offsetWidth;
+  wvcv.height = wvcv.offsetHeight;
+  layout = buildLayout(cv.width);
+  buildWaveform();
+}
+
+function loop() {
+  rafId = requestAnimationFrame(loop);
+  draw();
+}
+
+function draw() {
+  const W = cv.width, H = cv.height;
+  if (!W || !H) return;
+
+  const PIANO_H = Math.round(H * PIANO_FRAC);
+  const BAR_H   = H - PIANO_H;
+
+  if (!layout || Math.abs(layout.wW * layout.whites.length - W) > 1)
+    layout = buildLayout(W);
+  const { map, wW, whites } = layout;
+
+  ctx2.fillStyle = '#05050a';
+  ctx2.fillRect(0, 0, W, H);
+
+  // ピアノだけ描いて終わり（未ロード時）
+  if (!actx || !analyser || !audioBuf) {
+    drawPiano(whites, map, wW, BAR_H, PIANO_H, W);
+    drawWaveform();
+    return;
+  }
+
+  // FFT
+  let fft;
+  if (frozen && frozenData) {
+    fft = frozenData;
+  } else {
+    fft = new Float32Array(analyser.frequencyBinCount);
+    analyser.getFloatFrequencyData(fft);
+    if (playState === 'playing') lastFrame = new Float32Array(fft);
+  }
+
+  // ── BARS: white keys ─────────────────────────────────
+  whites.forEach(midi => {
+    const p = map[midi]; if (!p) return;
+    const n = fftForMidi(midi, fft);
+    if (n < 0.003) return;
+    const bH  = Math.min(n * BAR_H * BAR_SCALE, BAR_H * 1.95);
+    const bY  = BAR_H - bH;
+    const bW2 = p.w * 0.20;
+    const bX  = p.x + (p.w - bW2) * 0.5;
+    const g = ctx2.createLinearGradient(bX, bY, bX, BAR_H);
+    g.addColorStop(0,    rgba(0));
+    g.addColorStop(0.25, rgba(0.18 * n));
+    g.addColorStop(0.7,  rgba(0.58));
+    g.addColorStop(1,    rgba(0.82));
+    ctx2.shadowColor = rgb; ctx2.shadowBlur = 5 + n * 14;
+    ctx2.fillStyle = g;
+    ctx2.fillRect(bX, bY, bW2, bH);
+    ctx2.shadowBlur = 0;
+    ctx2.fillStyle = rgba(Math.min(1, n * 1.5 + 0.2));
+    ctx2.fillRect(bX, bY, bW2, 1.5);
+  });
+
+  // ── BARS: black keys ─────────────────────────────────
+  for (let m = MIDI_MIN; m <= MIDI_MAX; m++) {
+    if (!isBlack(m)) continue;
+    const p = map[m]; if (!p) continue;
+    const n = fftForMidi(m, fft);
+    if (n < 0.003) continue;
+    const bH  = Math.min(n * BAR_H * BAR_SCALE, BAR_H * 1.95);
+    const bY  = BAR_H - bH;
+    const bW2 = p.w * 0.20;
+    const bX2 = p.x + (p.w - bW2) * 0.5;
+    const g = ctx2.createLinearGradient(bX2, bY, bX2, BAR_H);
+    g.addColorStop(0,   rgba(0));
+    g.addColorStop(0.3, rgba(0.26 * n));
+    g.addColorStop(1,   rgba(0.92));
+    ctx2.shadowColor = rgb; ctx2.shadowBlur = 4 + n * 11;
+    ctx2.fillStyle = g;
+    ctx2.fillRect(bX2, bY, bW2, bH);
+    ctx2.shadowBlur = 0;
+    ctx2.fillStyle = rgba(Math.min(1, n * 2));
+    ctx2.fillRect(bX2, bY, bW2, 1.5);
+  }
+
+  ctx2.shadowBlur = 0;
+
+  // Grid + dB labels
+  ctx2.strokeStyle = 'rgba(255,255,255,0.016)';
+  ctx2.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach(f => {
+    const y = BAR_H * (1 - f);
+    ctx2.beginPath(); ctx2.moveTo(0, y); ctx2.lineTo(W, y); ctx2.stroke();
+    ctx2.fillStyle = 'rgba(255,255,255,0.04)';
+    ctx2.font = '8px Courier New'; ctx2.textAlign = 'left';
+    ctx2.fillText(`${Math.round(DB_MIN + (DB_MAX - DB_MIN) * f)}dB`, 6, y - 3);
+  });
+
+  drawPiano(whites, map, wW, BAR_H, PIANO_H, W);
+
+  // 時刻
+  const t  = Math.max(0, curTime());
+  const mn = String(Math.floor(t / 60)).padStart(2, '0');
+  const sc = (t % 60).toFixed(3).padStart(6, '0');
+  $('tdisp').textContent = `${mn}:${sc}`;
+
+  drawWaveform();
+}
+
+function drawPiano(whites, map, wW, BAR_H, PIANO_H, W) {
+  ctx2.fillStyle = '#0c0c14';
+  ctx2.fillRect(0, BAR_H - 1, W, 2);
+
+  whites.forEach((midi, i) => {
+    const x = i * wW;
+    const g = ctx2.createLinearGradient(x, BAR_H, x, BAR_H + PIANO_H);
+    g.addColorStop(0, '#c0c0c0'); g.addColorStop(1, '#e4e4e4');
+    ctx2.fillStyle = g;
+    ctx2.fillRect(x + 0.5, BAR_H, wW - 1, PIANO_H);
+    ctx2.strokeStyle = '#282828'; ctx2.lineWidth = 0.5;
+    ctx2.strokeRect(x + 0.5, BAR_H, wW - 1, PIANO_H);
+    if (midi % 12 === 0) {
+      const oct = Math.floor(midi / 12) - 1;
+      const fs  = Math.max(6, Math.min(9, wW * 0.44));
+      ctx2.fillStyle = '#666';
+      ctx2.font = `${fs}px Courier New`;
+      ctx2.textAlign = 'center';
+      ctx2.fillText(`C${oct}`, x + wW * 0.5, BAR_H + PIANO_H - 4);
+    }
+  });
+
+  const bKH = PIANO_H * 0.61;
+  for (let m = MIDI_MIN; m <= MIDI_MAX; m++) {
+    if (!isBlack(m)) continue;
+    const p = map[m]; if (!p) continue;
+    const g = ctx2.createLinearGradient(p.x, BAR_H, p.x, BAR_H + bKH);
+    g.addColorStop(0, '#0a0a0a'); g.addColorStop(1, '#1c1c1c');
+    ctx2.fillStyle = g;
+    ctx2.fillRect(p.x, BAR_H, p.w, bKH);
+    ctx2.strokeStyle = '#000'; ctx2.lineWidth = 0.5;
+    ctx2.strokeRect(p.x, BAR_H, p.w, bKH);
+  }
+}
+
+// ── EVENTS ───────────────────────────────────────────────────────
+window.addEventListener('resize', resize);
+resize();
+loop();
+
+// ドラッグ&ドロップ
+document.addEventListener('dragover', e => { e.preventDefault(); $('drop').classList.add('drag-over'); });
+document.addEventListener('dragleave', () => $('drop').classList.remove('drag-over'));
+document.addEventListener('drop', e => {
+  e.preventDefault(); $('drop').classList.remove('drag-over');
+  const f = e.dataTransfer.files[0]; if (f) loadFile(f);
+});
+$('drop').addEventListener('click', () => $('finput').click());
+
+// 波形タップ → 常にシーク&再生
+function onWaveformTap(clientX) {
+  if (!audioBuf) return;
+  actx.resume();
+  const rect  = wvcv.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  pauseOff = ratio * audioBuf.duration;
+  doPlay(pauseOff);
+}
+wvcv.addEventListener('click', e => onWaveformTap(e.clientX));
+wvcv.addEventListener('touchstart', e => {
+  e.preventDefault();
+  onWaveformTap(e.touches[0].clientX);
+}, { passive: false });
+
+// スペクトラムタップ
+function onSpectrumTap() {
+  if (!audioBuf) return;
+  actx.resume();
+  if (playState === 'playing') {
+    doPause();
+  } else if (playState === 'paused') {
+    doResume();
+  }
+}
+cv.addEventListener('click', onSpectrumTap);
+cv.addEventListener('touchstart', e => {
+  e.preventDefault();
+  onSpectrumTap();
+}, { passive: false });
+
+// ポーズ中⏸ボタン（ビジュアルのみ、タップでレジューム）
+$('btn-pause-icon').addEventListener('click', e => {
+  e.stopPropagation();
+  if (playState === 'paused') doResume();
+});
+$('btn-pause-icon').addEventListener('touchstart', e => {
+  e.preventDefault(); e.stopPropagation();
+  if (playState === 'paused') doResume();
+}, { passive: false });
+
+// ファイルオープンボタン
+$('btn-open').addEventListener('click', e => {
+  e.stopPropagation();
+  $('finput').click();
+});
+$('btn-open').addEventListener('touchstart', e => {
+  e.preventDefault(); e.stopPropagation();
+  $('finput').click();
+}, { passive: false });
+
+$('finput').addEventListener('change', e => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+  e.target.value = '';
+});
+
+// SPACEキー
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (!audioBuf) return;
+    actx.resume();
+    playState === 'playing' ? doPause() : doResume();
+  }
+});
+
+function $(id) { return document.getElementById(id); }
+</script>
+</body>
+</html>

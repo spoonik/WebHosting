@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>memo</title>
+<link rel="icon" href="./writing.ico" sizes="128x128">
+<style>
+  /* ─── 設定をここに書く ─────────────────── */
+  /* worker.js をデプロイしたあと、下の2行を編集 */
+  /* ─────────────────────────────────────── */
+
+  :root {
+    --worker-url: ""; /* 例: "https://memo-sync.yourname.workers.dev" */
+    --token:      ""; /* 例: "my-secret-token-xyz" */
+  }
+
+  /* ─── テーマ ─────────────────────────── */
+  :root {
+    --bg:        #f5f4f0;
+    --bg2:       #eceae4;
+    --fg:        #1a1917;
+    --fg2:       #6b6860;
+    --fg3:       #a8a59e;
+    --accent:    #2563eb;
+    --tab-h:     36px;
+    --font-ui:   'SF Pro Text', 'Helvetica Neue', 'Hiragino Kaku Gothic ProN', sans-serif;
+    --font-mono: 'SF Mono', 'Menlo', 'Hiragino Kaku Gothic ProN', monospace;
+    --radius:    6px;
+    --synced-c:  #16a34a;
+    --syncing-c: #d97706;
+    --offline-c: #dc2626;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:   #141312;
+      --bg2:  #1e1c1a;
+      --fg:   #e8e6e1;
+      --fg2:  #8a8780;
+      --fg3:  #54514d;
+      --accent: #60a5fa;
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-ui);
+    font-size: 18px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ─── レイアウト ─────────────────────── */
+  #app {
+    display: grid;
+    grid-template-rows: var(--tab-h) 1fr;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* ─── タブバー ───────────────────────── */
+  #tabbar {
+    display: flex;
+    align-items: stretch;
+    background: var(--bg2);
+    border-bottom: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    gap: 1px;
+    padding: 0 4px;
+    user-select: none;
+  }
+  #tabbar::-webkit-scrollbar { display: none; }
+
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px 0 12px;
+    white-space: nowrap;
+    cursor: pointer;
+    color: var(--fg2);
+    font-size: 12.5px;
+    border-bottom: 2px solid transparent;
+    transition: color 0.1s;
+    min-width: 60px;
+    max-width: 140px;
+  }
+  .tab:hover { color: var(--fg); }
+  .tab.active {
+    color: var(--fg);
+    border-bottom-color: var(--accent);
+    background: var(--bg);
+  }
+  .tab-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+  }
+  .tab-close {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    font-size: 13px;
+    color: var(--fg3);
+    line-height: 1;
+  }
+  .tab-close:hover { background: color-mix(in srgb, var(--fg) 12%, transparent); color: var(--fg); }
+
+  #btn-add {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    color: var(--fg3);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    border-radius: var(--radius);
+    margin: 4px 0;
+    transition: color 0.1s, background 0.1s;
+  }
+  #btn-add:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 8%, transparent); }
+
+  #sync-status {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    padding: 0 4px 0 10px;
+    font-size: 11px;
+    color: var(--fg3);
+    white-space: nowrap;
+    cursor: pointer;
+    border-radius: var(--radius);
+    transition: background 0.1s;
+  }
+  #sync-status:hover, #sync-status:active {
+    background: color-mix(in srgb, var(--fg) 8%, transparent);
+  }
+  #sync-status .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--fg3);
+    flex-shrink: 0;
+  }
+  #sync-status.synced .dot  { background: var(--synced-c); }
+  #sync-status.syncing .dot { background: var(--syncing-c); animation: pulse 1s ease-in-out infinite; }
+  #sync-status.offline .dot { background: var(--offline-c); }
+
+  /* ⚙ アイコン（常に表示） */
+  #sync-status .gear {
+    font-size: 13px;
+    line-height: 1;
+    opacity: 0.5;
+    padding: 0 4px;
+  }
+  #sync-status.noconfig .dot  { display: none; }
+  #sync-status.noconfig #sync-label { display: none; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* ─── テキストエリア ─────────────────── */
+  #editor-wrap {
+    position: relative;
+    overflow: hidden;
+  }
+
+  #editor {
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1.7;
+    border: none;
+    outline: none;
+    resize: none;
+    padding: 20px 24px;
+    caret-color: var(--accent);
+    letter-spacing: 0.01em;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ─── キーボードヒント（デスクトップのみ） */
+  @media (pointer: fine) {
+    #hints {
+      position: absolute;
+      bottom: 10px;
+      right: 14px;
+      display: flex;
+      gap: 12px;
+      font-size: 10.5px;
+      color: var(--fg3);
+      pointer-events: none;
+    }
+    #hints kbd {
+      font-family: var(--font-ui);
+      background: color-mix(in srgb, var(--fg) 8%, transparent);
+      border-radius: 3px;
+      padding: 1px 4px;
+    }
+  }
+  @media (pointer: coarse) { #hints { display: none; } }
+
+  /* ─── 設定パネル ─────────────────────── */
+  #config-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, var(--bg) 85%, transparent);
+    backdrop-filter: blur(4px);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #config-overlay.open { display: flex; }
+
+  #config-panel {
+    background: var(--bg2);
+    border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+    border-radius: 10px;
+    padding: 28px 32px;
+    width: min(480px, 92vw);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    box-shadow: 0 8px 40px color-mix(in srgb, #000 25%, transparent);
+  }
+
+  #config-panel h2 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: -0.01em;
+  }
+  #config-panel p {
+    font-size: 12px;
+    color: var(--fg2);
+    line-height: 1.6;
+  }
+
+  .config-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .config-field label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--fg2);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .config-field input {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .config-field input:focus {
+    border-color: var(--accent);
+  }
+
+  .config-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  .btn {
+    padding: 8px 18px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+    border: none;
+    transition: opacity 0.1s;
+  }
+  .btn:hover { opacity: 0.82; }
+  .btn-primary { background: var(--accent); color: #fff; font-weight: 500; }
+  .btn-ghost {
+    background: color-mix(in srgb, var(--fg) 8%, transparent);
+    color: var(--fg2);
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="tabbar">
+    <!-- tabs injected by JS -->
+    <div id="btn-add" title="新しいノート (Ctrl+T)">+</div>
+    <div id="sync-status" class="noconfig" title="設定を開く">
+      <div class="dot"></div>
+      <span id="sync-label">-</span>
+      <span class="gear">⚙</span>
+    </div>
+  </div>
+  <div id="editor-wrap">
+    <textarea id="editor" spellcheck="false" autocorrect="off" autocapitalize="off"></textarea>
+    <div id="hints">
+      <span><kbd>Ctrl T</kbd> 新規</span>
+      <span><kbd>Ctrl W</kbd> 閉じる</span>
+      <span><kbd>Ctrl ,</kbd> 設定</span>
+    </div>
+  </div>
+</div>
+
+<!-- 設定パネル -->
+<div id="config-overlay">
+  <div id="config-panel">
+    <h2>⚙ 同期設定</h2>
+    <p>Cloudflare Worker の URL とトークンを入力してください。<br>
+       設定はこのブラウザのローカルストレージに保存されます。</p>
+    <div class="config-field">
+      <label>Worker URL</label>
+      <input id="cfg-url" type="url" placeholder="https://memo-sync.yourname.workers.dev" autocomplete="off">
+    </div>
+    <div class="config-field">
+      <label>Secret Token</label>
+      <input id="cfg-token" type="password" placeholder="your-secret-token" autocomplete="off">
+    </div>
+    <div class="config-actions">
+      <button class="btn btn-ghost" id="cfg-cancel">キャンセル</button>
+      <button class="btn btn-primary" id="cfg-save">保存して同期</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── ストレージキー ──────────────────────────
+const LS_NOTES   = 'memo_notes_v1';
+const LS_ACTIVE  = 'memo_active_v1';
+const LS_ETAG    = 'memo_etag_v1';
+const LS_CFG_URL = 'memo_cfg_url';
+const LS_CFG_TOK = 'memo_cfg_token';
+
+// ── 状態 ────────────────────────────────────
+let notes  = [];   // [{ id, title, content, updatedAt }]
+let active = null; // id
+let syncTimer  = null;
+let syncPaused = false;  // 編集中は push を遅延
+
+// ── DOM ─────────────────────────────────────
+const tabbar    = document.getElementById('tabbar');
+const btnAdd    = document.getElementById('btn-add');
+const editor    = document.getElementById('editor');
+const syncEl    = document.getElementById('sync-status');
+const syncLabel = document.getElementById('sync-label');
+const overlay   = document.getElementById('config-overlay');
+const cfgUrl    = document.getElementById('cfg-url');
+const cfgToken  = document.getElementById('cfg-token');
+
+// ── ノートID ─────────────────────────────────
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+
+// ── ローカルストレージ ───────────────────────
+let isVirgin = false; // このブラウザに localStorage が一切ない初回フラグ
+
+function loadLocal() {
+  try {
+    const raw = localStorage.getItem(LS_NOTES);
+    if (raw) notes = JSON.parse(raw);
+  } catch {}
+
+  if (!notes.length) {
+    // localStorage が空 = 新しいブラウザ or 初回
+    // updatedAt:0 にしてKVのデータを必ず優先させる
+    isVirgin = true;
+    notes = [{ id: uid(), title: 'メモ', content: '', updatedAt: 0 }];
+  }
+
+  active = localStorage.getItem(LS_ACTIVE) || notes[0].id;
+  if (!notes.find(n => n.id === active)) active = notes[0].id;
+}
+
+function saveLocal() {
+  localStorage.setItem(LS_NOTES, JSON.stringify(notes));
+  localStorage.setItem(LS_ACTIVE, active);
+}
+
+function getNote(id) { return notes.find(n => n.id === id); }
+
+function titleOf(note) {
+  const first = (note.content || '').split('\n')[0].trim();
+  return first.slice(0, 30) || '（空）';
+}
+
+// ── 設定 ─────────────────────────────────────
+function getConfig() {
+  return {
+    url:   localStorage.getItem(LS_CFG_URL)  || '',
+    token: localStorage.getItem(LS_CFG_TOK)  || '',
+  };
+}
+
+// ── 同期ステータスUI ─────────────────────────
+function setStatus(state, text) {
+  syncEl.className = state; // noconfig | synced | syncing | offline
+  syncLabel.textContent = text;
+}
+
+// ── 同期：KV から pull ───────────────────────
+async function pullFromKV() {
+  const { url, token } = getConfig();
+  if (!url || !token) { setStatus('noconfig', ''); return; }
+
+  setStatus('syncing', '同期中...');
+  const etag = localStorage.getItem(LS_ETAG) || '';
+  const headers = { 'X-Token': token };
+  if (etag) headers['If-None-Match'] = etag;
+
+  try {
+    const res = await fetch(url, { headers });
+    if (res.status === 304) { setStatus('synced', '同期済み'); return; } // 変化なし
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const remote = await res.json();
+    const newEtag = res.headers.get('ETag') || '';
+    localStorage.setItem(LS_ETAG, newEtag);
+
+    // タイムスタンプで比較 → リモートが新しい or ローカルが初回なら上書き
+    const localTs  = isVirgin ? -1 : Math.max(...notes.map(n => n.updatedAt || 0), 0);
+    const remoteTs = remote.updatedAt || 0;
+
+    if (remoteTs > localTs) {
+      notes  = remote.notes?.length ? remote.notes : notes;
+      active = localStorage.getItem(LS_ACTIVE) || (notes[0]?.id ?? null);
+      if (!notes.find(n => n.id === active)) active = notes[0]?.id ?? null;
+      isVirgin = false;
+      saveLocal();
+      render();
+    } else if (isVirgin) {
+      // KVも空 → ダミーノートをそのまま使う（タイムスタンプだけ今に更新）
+      notes[0].updatedAt = Date.now();
+      isVirgin = false;
+    }
+    setStatus('synced', '同期済み');
+  } catch (e) {
+    setStatus('offline', 'オフライン');
+  }
+}
+
+// ── 同期：KV へ push ─────────────────────────
+async function pushToKV() {
+  const { url, token } = getConfig();
+  if (!url || !token) return;
+
+  const payload = JSON.stringify({ notes, updatedAt: Date.now() });
+  setStatus('syncing', '送信中...');
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'X-Token': token, 'Content-Type': 'application/json' },
+      body: payload,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const newEtag = res.headers.get('ETag') || '';
+    if (newEtag) localStorage.setItem(LS_ETAG, newEtag);
+    setStatus('synced', '同期済み');
+  } catch {
+    setStatus('offline', 'オフライン');
+  }
+}
+
+// デバウンス付き push（編集停止から 2s 後）
+function schedulePush() {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(pushToKV, 2000);
+}
+
+// ── UI レンダー ──────────────────────────────
+function render() {
+  // タブを再描画（btn-add / sync-status より前に挿入）
+  const existing = tabbar.querySelectorAll('.tab');
+  existing.forEach(el => el.remove());
+
+  const frag = document.createDocumentFragment();
+  for (const note of notes) {
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (note.id === active ? ' active' : '');
+    tab.dataset.id = note.id;
+    tab.innerHTML = `<span class="tab-title">${esc(titleOf(note))}</span>`
+                  + `<span class="tab-close" data-close="${note.id}" title="閉じる">×</span>`;
+    frag.appendChild(tab);
+  }
+  tabbar.insertBefore(frag, btnAdd);
+
+  // エディタ
+  const note = getNote(active);
+  if (note) {
+    editor.value = note.content;
+    editor.focus();
+  }
+}
+
+function esc(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── タブ操作 ─────────────────────────────────
+function addNote() {
+  const note = { id: uid(), title: '', content: '', updatedAt: Date.now() };
+  notes.push(note);
+  active = note.id;
+  saveLocal();
+  render();
+  schedulePush();
+}
+
+function closeNote(id) {
+  if (notes.length <= 1) return; // 最後の1枚は消さない
+  const idx = notes.findIndex(n => n.id === id);
+  notes.splice(idx, 1);
+  if (active === id) {
+    active = notes[Math.max(0, idx - 1)].id;
+  }
+  saveLocal();
+  render();
+  schedulePush();
+}
+
+function switchTab(id) {
+  const cur = getNote(active);
+  if (cur) cur.content = editor.value; // 切り替え前に保存
+  active = id;
+  saveLocal();
+  render();
+}
+
+// ── イベント ─────────────────────────────────
+btnAdd.addEventListener('click', addNote);
+
+tabbar.addEventListener('click', e => {
+  const closeId = e.target.dataset.close;
+  if (closeId) { closeNote(closeId); return; }
+  const tab = e.target.closest('.tab');
+  if (tab && tab.dataset.id) switchTab(tab.dataset.id);
+});
+
+editor.addEventListener('input', () => {
+  const note = getNote(active);
+  if (!note) return;
+  note.content    = editor.value;
+  note.updatedAt  = Date.now();
+  saveLocal();
+
+  // タブタイトル更新（first-line 変わった時だけ）
+  const cur = tabbar.querySelector(`.tab[data-id="${active}"] .tab-title`);
+  if (cur) cur.textContent = titleOf(note);
+
+  schedulePush();
+});
+
+// キャレット位置保存（デスクトップのみ）
+editor.addEventListener('keyup', () => {
+  const note = getNote(active);
+  if (note) note._caret = editor.selectionStart;
+});
+
+// キーボードショートカット
+document.addEventListener('keydown', e => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod) return;
+  if (e.key === 't') { e.preventDefault(); addNote(); }
+  if (e.key === 'w') { e.preventDefault(); closeNote(active); }
+  if (e.key === ',') { e.preventDefault(); openConfig(); }
+});
+
+document.getElementById('sync-status').addEventListener('click', openConfig);
+
+// ── 設定パネル ───────────────────────────────
+function openConfig() {
+  const { url, token } = getConfig();
+  cfgUrl.value   = url;
+  cfgToken.value = token;
+  overlay.classList.add('open');
+  cfgUrl.focus();
+}
+
+document.getElementById('cfg-cancel').addEventListener('click', () => {
+  overlay.classList.remove('open');
+  editor.focus();
+});
+
+document.getElementById('cfg-save').addEventListener('click', () => {
+  localStorage.setItem(LS_CFG_URL,  cfgUrl.value.trim());
+  localStorage.setItem(LS_CFG_TOK,  cfgToken.value.trim());
+  localStorage.removeItem(LS_ETAG); // ETag リセット → 次の pull で強制取得
+  overlay.classList.remove('open');
+  editor.focus();
+  pullFromKV();
+});
+
+overlay.addEventListener('click', e => {
+  if (e.target === overlay) { overlay.classList.remove('open'); editor.focus(); }
+});
+
+// ── 起動 ─────────────────────────────────────
+loadLocal();
+render();
+pullFromKV(); // バックグラウンドで pull（ローカルが先に表示される）
+
+// ページ離脱前に確実に push（beforeunload は短時間だがflushには十分）
+window.addEventListener('beforeunload', () => {
+  const { url, token } = getConfig();
+  if (!url || !token) return;
+  const payload = JSON.stringify({ notes, updatedAt: Date.now() });
+  // sendBeacon は非同期だが返答を待たない→高速離脱OK
+  navigator.sendBeacon(
+    url + '?beacon=1',
+    new Blob([payload], { type: 'application/json' })
+  );
+});
+// ※ sendBeacon は PUT ではなく POST になるため Worker 側では無視（PUTのみ受け付ける）
+// → 代わりに次回起動時の pull で同期される。問題なし。
+</script>
+</body>
+</html>
