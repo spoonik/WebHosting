@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ABC Note Sequencer</title>
-<link rel="icon" href="./favicon.ico" type=“image/x-icon” sizes="256x256">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500&display=swap');
 
@@ -575,49 +574,63 @@ async function playSlot(i) {
     return;
   }
 
-  // parseAbc を使って音符列を取得
-  const [ln, ld] = settings.baseLen.split('/').map(Number);
-  const baseTick  = 4 * TPQN * ln / ld;
-  const keyAdj    = keyAdjMap(settings.key);
-  const notes     = parseAbc(cap4(raw), baseTick, keyAdj);
-  if (!notes.length) return;
+  // ── 音程計算を abcjs に丸投げ ──────────────────────────────────────
+  // buildAbc が K:Emaj 等を含む完全な ABC 文字列を作るので、
+  // abcjs が内部でキー署名・臨時記号を正確に処理してくれる。
+  const abcStr = buildAbc(cap4(raw), i);
+  const vo = ABCJS.renderAbc(document.getElementById('tmp'), abcStr, {})[0];
+  if (!vo) return;
 
-  const secPerTick = 60 / (Math.max(1, settings.tempo) * TPQN);
-  const startBase  = ctx.currentTime + 0.06; // 60ms バッファ (iOS余裕)
-  const nodes      = [];
-  let maxEnd       = 0;
+  // setUpAudio が返すトラック配列。各 note イベントは:
+  //   { cmd:'note', pitch: MIDIノート番号(キー署名済み),
+  //     start: 全音符単位の開始時刻, duration: 全音符単位の長さ, ... }
+  // setUpAudio は { tempo, tracks:[...], totalDuration } を返す（配列ではない）
+  const seq = vo.setUpAudio({ qpm: settings.tempo });
+  if (!seq || !seq.tracks || !seq.tracks.length) return;
 
-  for (const note of notes) {
-    const t0  = startBase + note.s * secPerTick;
-    const dur = Math.max(0.04, note.d * secPerTick * 0.88);
-    if (t0 + dur > maxEnd) maxEnd = t0 + dur;
+  // seq.tempo が実際の BPM（ABC の Q: フィールド優先）
+  const bpm        = seq.tempo || settings.tempo;
+  const secPerWhole = 4 * 60 / Math.max(1, bpm);
+  const startBase   = ctx.currentTime + 0.06;
+  const nodes       = [];
+  let maxEnd        = 0;
 
-    // オシレーター × 2 (基音 + 1oct上で倍音感)
-    [[1.0, 0.70], [2.0, 0.18], [3.0, 0.07], [0.5, 0.05]].forEach(([ratio, amp]) => {
-      const osc  = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = ratio === 1.0 ? 'triangle' : 'sine';
-      osc.frequency.value = midiToFreq(note.p) * ratio;
-      const g = gain.gain;
-      const atk = Math.min(0.012, dur * 0.1);
-      const rel = Math.min(dur * 0.82, dur - atk);
-      g.setValueAtTime(0, t0);
-      g.linearRampToValueAtTime(amp, t0 + atk);
-      g.exponentialRampToValueAtTime(0.0001, t0 + atk + rel);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(t0);
-      osc.stop(t0 + dur + 0.02);
-      nodes.push({ osc, gain });
-    });
+  for (const track of seq.tracks) {
+    for (const ev of track) {
+      if (ev.cmd !== 'note' || typeof ev.pitch !== 'number' || ev.duration <= 0) continue;
+
+      const t0  = startBase + ev.start * secPerWhole;
+      const dur = Math.max(0.04, ev.duration * secPerWhole * 0.88);
+      if (t0 + dur > maxEnd) maxEnd = t0 + dur;
+
+      // オシレーター合成（基音 triangle + 倍音 sine × 3）
+      [[1.0, 0.70], [2.0, 0.18], [3.0, 0.07], [0.5, 0.05]].forEach(([ratio, amp]) => {
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = ratio === 1.0 ? 'triangle' : 'sine';
+        osc.frequency.value = midiToFreq(ev.pitch) * ratio;
+        const g = gain.gain;
+        const atk = Math.min(0.012, dur * 0.1);
+        const rel = Math.min(dur * 0.82, dur - atk);
+        g.setValueAtTime(0, t0);
+        g.linearRampToValueAtTime(amp, t0 + atk);
+        g.exponentialRampToValueAtTime(0.0001, t0 + atk + rel);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t0);
+        osc.stop(t0 + dur + 0.02);
+        nodes.push({ osc, gain });
+      });
+    }
   }
+
+  if (!nodes.length) return;
 
   scheduledNodes = nodes;
   const b = document.getElementById('bp-'+i);
   if (b) { b.textContent='■'; b.classList.add('playing'); }
   playing = i;
 
-  // stopPlay から呼べるようにラップ
   synth = {
     stop() {
       const now = ctx.currentTime;
